@@ -3,27 +3,34 @@ import express from "express";
 import { createServer } from "node:http";
 import { createClient } from "redis";
 import { WebSocket, WebSocketServer } from "ws";
-import type { ResultSetHeader, RowDataPacket } from "mysql2";
+import { redisChannel, redisUrl } from "../shared/config.js";
 import { createDatabasePool } from "../shared/database.js";
 import type { ServiceState, ServiceStatus } from "../shared/status.js";
 import { retry } from "../shared/status.js";
 import { ui } from "./ui.js";
 
 const port = Number(process.env.SERVER_PORT ?? process.env.PORT ?? 3100);
-const redisUrl = process.env.REDIS_URL ?? "redis://localhost:6379";
+const valkeyUrl = redisUrl();
 const ms1Url = process.env.MS1_URL ?? `http://127.0.0.1:${process.env.MS1_PORT ?? 3001}`;
 
 const app = express();
 const httpServer = createServer(app);
 const wsServer = new WebSocketServer({ server: httpServer, path: "/ws" });
 const pool = createDatabasePool();
-const redisPublisher = createClient({ url: redisUrl });
+const redisPublisher = createClient({ url: valkeyUrl });
 const redisSubscriber = redisPublisher.duplicate();
 const statuses = new Map<string, ServiceStatus>();
+let databaseReady = false;
+let redisReady = false;
+let shuttingDown = false;
 
 app.use(express.json());
 app.get("/", (_request, response) => response.type("html").send(ui));
-app.get("/api/health", (_request, response) => response.json({ ok: true }));
+app.get("/api/live", (_request, response) => response.json({ ok: true }));
+app.get("/api/health", (_request, response) => {
+  const ok = databaseReady && redisReady;
+  response.status(ok ? 200 : 503).json({ ok, databaseReady, redisReady });
+});
 app.get("/api/status", (_request, response) => response.json(Object.fromEntries(statuses)));
 app.post("/api/status", (request, response) => {
   const { name, state, message } = request.body as Partial<ServiceStatus>;
@@ -46,36 +53,34 @@ function updateStatus(name: string, state: ServiceState, message: string): void 
 wsServer.on("connection", (socket) => socket.send(JSON.stringify(Object.fromEntries(statuses))));
 
 async function checkMainDatabase(): Promise<void> {
-  updateStatus("server-db", "starting", "Création de la table et test SQL…");
-  const connection = await pool.getConnection();
-  try {
-    await connection.query(`CREATE TABLE IF NOT EXISTS deployment_checks (
-      id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-      message VARCHAR(255) NOT NULL
-    )`);
-    const [inserted] = await connection.execute<ResultSetHeader>(
-      "INSERT INTO deployment_checks(message) VALUES(?)",
-      [`Test serveur ${new Date().toISOString()}`],
-    );
-    const [selected] = await connection.execute<(RowDataPacket & { id: number; message: string })[]>(
-      "SELECT id, message FROM deployment_checks WHERE id = ?",
-      [inserted.insertId],
-    );
-    if (!selected[0]) throw new Error("La ligne insérée n'a pas été retrouvée");
-    updateStatus("server-db", "ok", `INSERT + SELECT réussis (id ${selected[0].id})`);
-  } finally {
-    connection.release();
-  }
+  updateStatus("server-db", "starting", "Test PostgreSQL en cours…");
+  const inserted = await pool.query<{ id: string }>(
+    "INSERT INTO deployment_checks(message) VALUES($1) RETURNING id",
+    [`Test serveur ${new Date().toISOString()}`],
+  );
+  const id = inserted.rows[0]?.id;
+  if (!id) throw new Error("PostgreSQL n'a retourné aucun identifiant");
+  const selected = await pool.query<{ id: string; message: string }>(
+    "SELECT id, message FROM deployment_checks WHERE id = $1",
+    [id],
+  );
+  if (!selected.rows[0]) throw new Error("La ligne insérée n'a pas été retrouvée");
+  databaseReady = true;
+  updateStatus("server-db", "ok", `INSERT + SELECT réussis (id ${id})`);
 }
 
 async function setupRedis(): Promise<void> {
   await Promise.all([redisPublisher.connect(), redisSubscriber.connect()]);
-  await redisSubscriber.subscribe("deployment:pong", (message) => {
-    updateStatus("microservice-3", "ok", `Réponse Redis reçue : ${message}`);
+  await redisSubscriber.subscribe(redisChannel("deployment:pong"), (message) => {
+    updateStatus("microservice-3", "ok", `Réponse Valkey reçue : ${message}`);
   });
-  updateStatus("redis-channel", "ok", "Connecté au canal Redis");
-  setInterval(() => void redisPublisher.publish("deployment:ping", new Date().toISOString()), 5_000);
-  await redisPublisher.publish("deployment:ping", new Date().toISOString());
+  redisReady = true;
+  updateStatus("valkey-channel", "ok", "Connecté au canal Valkey");
+  setInterval(
+    () => void redisPublisher.publish(redisChannel("deployment:ping"), new Date().toISOString()),
+    5_000,
+  ).unref();
+  await redisPublisher.publish(redisChannel("deployment:ping"), new Date().toISOString());
 }
 
 async function checkMicroservice1(): Promise<void> {
@@ -84,14 +89,25 @@ async function checkMicroservice1(): Promise<void> {
   updateStatus("microservice-1", "ok", "API HTTP joignable par le serveur");
 }
 
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  databaseReady = false;
+  redisReady = false;
+  httpServer.close();
+  await Promise.allSettled([redisPublisher.quit(), redisSubscriber.quit(), pool.end()]);
+}
+
 httpServer.listen(port, () => console.log(`Server listening on http://localhost:${port}`));
-redisPublisher.on("error", (error) => console.error("Redis publisher:", error));
-redisSubscriber.on("error", (error) => console.error("Redis subscriber:", error));
+redisPublisher.on("error", (error) => console.error("Valkey publisher:", error));
+redisSubscriber.on("error", (error) => console.error("Valkey subscriber:", error));
 updateStatus("server", "ok", `API et WebSocket disponibles sur le port ${port}`);
 updateStatus("microservice-1", "starting", "En attente de l'API HTTP…");
-updateStatus("microservice-2", "starting", "En attente du test MySQL/MariaDB…");
-updateStatus("microservice-3", "starting", "En attente du message Redis…");
+updateStatus("microservice-2", "starting", "En attente du test PostgreSQL…");
+updateStatus("microservice-3", "starting", "En attente du message Valkey…");
 
 void retry(checkMainDatabase, "Main database check");
-void retry(setupRedis, "Redis setup");
+void retry(setupRedis, "Valkey setup");
 void retry(checkMicroservice1, "Microservice 1 check");
+process.once("SIGTERM", () => void shutdown());
+process.once("SIGINT", () => void shutdown());

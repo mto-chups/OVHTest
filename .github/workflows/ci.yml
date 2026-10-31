@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  application:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
+  helm-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: >-
+          helm lint infra/modules/k8s-platform/chart
+          --set letsencryptEmail=test@example.com
+          --set okmsId=00000000-0000-0000-0000-000000000000
+          --set okmsServer=https://eu-west-rbx.okms.ovh.net
+
+  terraform:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        path:
+          - infra/environments/pilot/bootstrap
+          - infra/environments/pilot/shared-network
+          - infra/environments/pilot/shared-services
+          - infra/environments/pilot/cluster
+          - infra/environments/pilot/platform
+          - infra/environments/pilot/edge-dns
+          - infra/environments/pilot/applications
+          - infra/environments/pilot/observability
+          - infra/tools/capabilities
+    defaults:
+      run:
+        working-directory: ${{ matrix.path }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: 1.17.1
+          terraform_wrapper: false
+      - name: Format
+        working-directory: .
+        run: terraform fmt -check -recursive infra
+      - run: terraform init -backend=false -input=false
+      - run: terraform validate
+      - run: terraform test

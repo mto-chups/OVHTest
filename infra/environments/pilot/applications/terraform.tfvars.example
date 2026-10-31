@@ -1,0 +1,4 @@
+kubeconfig_path = "../../../../kubeconfig.json"
+# Copier ce fichier vers versions.auto.tfvars puis remplacer par le digest du workflow GitHub.
+image           = "registry.gra.cloud.ovh.net/ovhtest/ovhtest@sha256:0000000000000000000000000000000000000000000000000000000000000000"
+secret_revision = "1"

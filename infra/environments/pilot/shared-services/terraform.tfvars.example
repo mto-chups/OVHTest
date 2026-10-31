@@ -1,0 +1,8 @@
+data_network_id     = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+data_subnet_id      = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+postgresql_version  = "18"
+postgresql_flavor   = "db1-4"
+valkey_version      = "8.1"
+valkey_flavor       = "db1-4"
+registry_plan_id    = "9f728ba5-998b-4401-ab0f-497cd8bc6a89" # SMALL, GRA
+okms_region         = "eu-west-rbx"

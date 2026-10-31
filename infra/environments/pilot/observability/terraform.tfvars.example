@@ -1,0 +1,11 @@
+kubeconfig_path      = "../../../../kubeconfig.json"
+ldp_service_name     = "ldp-xx-xxxxx"
+retention_id         = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+ldp_host             = "graX.logs.ovh.com"
+kube_id              = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+postgresql_cluster_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+valkey_cluster_id     = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Activer uniquement après confirmation des kinds par les capabilities OVH.
+enable_mks_audit_logs = false
+enable_database_logs  = false

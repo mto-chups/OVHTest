@@ -1,52 +1,33 @@
-# Test de déploiement minimal
+# OVHTest
 
-Petit projet Node.js/TypeScript composé d'un serveur principal, de trois microservices, de MySQL/MariaDB et de Redis.
-
-## Architecture
-
-- **server** (`:3000`) : API Express, interface HTML et WebSocket. Au démarrage, il crée la table `deployment_checks`, insère une ligne, puis la relit.
-- **microservice-1** (`:3001`) : expose une API HTTP et vérifie l'API du serveur principal.
-- **microservice-2** : exécute un `SELECT NOW()` dans MySQL/MariaDB et transmet son état au serveur.
-- **microservice-3** : écoute `deployment:ping` dans Redis et répond sur `deployment:pong`.
-- **Redis** : lancé par Docker Compose. La base est fournie par WAMP ou par un service MySQL managé.
-
-## Lancer le projet
-
-Prérequis : Docker avec Docker Compose et WAMP démarré. Exécuter une fois `database/setup-wamp.sql` dans phpMyAdmin : ce script crée la base et un utilisateur accessible depuis Docker. Changez son mot de passe dans le SQL et dans le fichier `.env`.
-
-Copier la configuration WAMP pour Docker :
-
-```bash
-copy .env.docker-wamp.example .env
-```
-
-```bash
-docker compose up --build
-```
-
-Ouvrir ensuite <http://localhost:3000>. Les cartes se mettent à jour automatiquement via WebSocket.
-
-Pour arrêter :
-
-```bash
-docker compose down
-```
-
-## API utile
-
-- `GET /api/health` : santé du serveur.
-- `GET /api/status` : dernier état connu de tous les composants.
-- `POST /api/status` : remontée d'un état par un microservice.
-- `WS /ws` : diffusion temps réel des états.
+Pilote Node.js/TypeScript composé d'un serveur principal et de trois microservices. La cible cloud est OVHcloud MKS avec PostgreSQL et Valkey managés ; l'environnement local Docker Compose fournit PostgreSQL et Redis compatibles.
 
 ## Développement local
 
-La commande `npm run dev` lance simultanément le serveur et les trois microservices, avec des logs préfixés. Les scripts individuels `npm run dev:server`, `dev:ms1`, `dev:ms2` et `dev:ms3` restent disponibles. Copier `.env.example` vers `.env`. MySQL/MariaDB et Redis doivent être joignables aux adresses configurées.
+Prérequis : Node.js 22+ ou Docker avec Compose.
 
-En développement local, le serveur principal écoute sur <http://localhost:3100> et MS1 sur le port `3001`. Docker conserve <http://localhost:3000> grâce à ses variables propres. `SERVER_PORT` et `MS1_PORT` sont séparés afin que les deux processus ne se disputent jamais une variable `PORT` commune.
+```powershell
+docker compose up --build
+```
 
-Si Redis affiche `ECONNREFUSED` en lancement npm, démarrez Redis séparément ou lancez l'ensemble avec Docker Compose, qui fournit déjà le conteneur Redis. Les erreurs imbriquées Redis sont affichées intégralement pour faciliter le diagnostic.
+L'interface est disponible sur <http://localhost:3000>. Le service `migrate` applique d'abord la migration PostgreSQL idempotente, puis les quatre composants démarrent. Pour vérifier le code hors conteneur :
 
-En lancement Docker, il ne faut pas remplacer `REDIS_URL=redis://redis:6379` par `localhost` : dans un conteneur, `localhost` désigne le conteneur lui-même. En lancement npm hors Docker, utilisez bien `redis://127.0.0.1:6379` et démarrez Redis avec `docker compose up -d redis`.
+```powershell
+npm ci
+npm test
+```
 
-Pour OVH, partir de `.env.ovh.example`. Le code utilise les mêmes variables `DB_*` et active TLS avec `DB_SSL=true`, sans changement applicatif.
+## Contrats applicatifs
+
+- `server` écoute sur `PORT` (3000) et expose `/api/health`, `/api/live`, `/api/status` et `/ws`.
+- `microservice-1` écoute sur `PORT` (3001) et expose `/health`.
+- `microservice-2` écoute sur `MS2_PORT` (3002) et expose `/health`.
+- `microservice-3` écoute sur `MS3_PORT` (3003) et expose `/health`.
+- PostgreSQL utilise `DB_HOST`, `DB_PORT` (5432), `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL` et `DB_SSL_REJECT_UNAUTHORIZED`.
+- Valkey utilise `REDIS_URL`; sur OVHcloud cette URL doit commencer par `rediss://`. Les canaux sont préfixés par `REDIS_PREFIX` (`ovhtest` par défaut).
+
+Le processus de migration utilise un compte DDL distinct et reçoit `DB_RUNTIME_USER` pour accorder uniquement les droits nécessaires au rôle d'exécution.
+
+## Déploiement OVHcloud
+
+Toute l'IaC et le guide pas à pas sont dans [infra/README.md](infra/README.md). Aucun `terraform apply` n'est exécuté par la CI : les plans sont relus et appliqués localement, état par état.

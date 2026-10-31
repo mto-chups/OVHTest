@@ -1,0 +1,4 @@
+node_network_id          = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+nodes_subnet_id          = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+load_balancers_subnet_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+admin_cidrs              = ["203.0.113.10/32"]

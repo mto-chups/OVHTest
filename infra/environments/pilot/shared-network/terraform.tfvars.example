@@ -1,0 +1,7 @@
+vrack_id = "pn-xxxxxxxx"
+create_vrack = false
+vlan_id      = 40
+
+# Pour commander un nouveau vRack au lieu d'en réutiliser un :
+# vrack_id     = null
+# create_vrack = true

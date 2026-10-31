@@ -9,24 +9,26 @@
     "start:ms1": "node dist/microservice-1/index.js",
     "start:ms2": "node dist/microservice-2/index.js",
     "start:ms3": "node dist/microservice-3/index.js",
+    "start:migrate": "node dist/migrate/index.js",
     "dev": "concurrently --kill-others-on-fail --names server,ms1,ms2,ms3 --prefix-colors cyan,green,yellow,magenta \"npm:dev:server\" \"npm:dev:ms1\" \"npm:dev:ms2\" \"npm:dev:ms3\"",
     "dev:server": "tsx watch src/server/index.ts",
     "dev:ms1": "tsx watch src/microservice-1/index.ts",
     "dev:ms2": "tsx watch src/microservice-2/index.ts",
     "dev:ms3": "tsx watch src/microservice-3/index.ts",
     "typecheck": "tsc --noEmit",
-    "install": "npm i"
+    "test": "npm run build && node --test dist/shared/config.test.js"
   },
   "dependencies": {
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "mysql2": "^3.15.3",
+    "pg": "^8.16.3",
     "redis": "^5.8.3",
     "ws": "^8.18.3"
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/node": "^24.3.0",
+    "@types/pg": "^8.15.5",
     "@types/ws": "^8.18.1",
     "concurrently": "^9.2.1",
     "tsx": "^4.20.5",

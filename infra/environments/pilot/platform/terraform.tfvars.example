@@ -1,0 +1,3 @@
+kubeconfig_path = "../../../../kubeconfig.json"
+okms_id         = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+okms_server     = "https://eu-west-rbx.okms.ovh.net"

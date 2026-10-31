@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS deployment_checks (
+  id BIGSERIAL PRIMARY KEY,
+  message VARCHAR(255) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);

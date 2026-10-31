@@ -1,0 +1,40 @@
+name: Build pilot image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567
+        with:
+          registry: ${{ vars.OVH_REGISTRY_HOST }}
+          username: ${{ secrets.OVH_REGISTRY_PUSH_USERNAME }}
+          password: ${{ secrets.OVH_REGISTRY_PUSH_PASSWORD }}
+      - name: Build and push immutable image
+        id: build
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: .
+          push: true
+          tags: ${{ vars.OVH_REGISTRY_HOST }}/${{ vars.OVH_REGISTRY_REPOSITORY }}:${{ github.sha }}
+      - name: Publish digest
+        env:
+          IMAGE: ${{ vars.OVH_REGISTRY_HOST }}/${{ vars.OVH_REGISTRY_REPOSITORY }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          echo "### Image pilote" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${IMAGE}@${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Copiez cette valeur dans infra/environments/pilot/applications/versions.auto.tfvars." >> "$GITHUB_STEP_SUMMARY"

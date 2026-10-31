@@ -1,4 +1,18 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ovhtest
+      POSTGRES_USER: ovhtest_admin
+      POSTGRES_PASSWORD: local-only-password
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ovhtest_admin -d ovhtest"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
   redis:
     image: redis:8-alpine
     ports:
@@ -9,21 +23,34 @@ services:
       timeout: 3s
       retries: 10
 
+  migrate:
+    build: .
+    command: ["node", "dist/migrate/index.js"]
+    environment: &database-environment
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ovhtest_admin
+      DB_PASSWORD: local-only-password
+      DB_NAME: ovhtest
+      DB_SSL: "false"
+      DB_RUNTIME_USER: ovhtest_admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   server:
     build: .
     command: ["node", "dist/server/index.js"]
     environment:
       PORT: 3000
-      DB_HOST: ${DB_HOST:-host.docker.internal}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:-root}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-      DB_NAME: ${DB_NAME:-deployment_test}
-      DB_SSL: ${DB_SSL:-false}
-      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
+      <<: *database-environment
       REDIS_URL: redis://redis:6379
+      REDIS_TLS_REQUIRED: "false"
+      REDIS_PREFIX: ovhtest
       MS1_URL: http://microservice-1:3001
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     ports:
@@ -42,14 +69,9 @@ services:
     build: .
     command: ["node", "dist/microservice-2/index.js"]
     environment:
+      MS2_PORT: 3002
       SERVER_URL: http://server:3000
-      DB_HOST: ${DB_HOST:-host.docker.internal}
-      DB_PORT: ${DB_PORT:-3306}
-      DB_USER: ${DB_USER:-root}
-      DB_PASSWORD: ${DB_PASSWORD:-}
-      DB_NAME: ${DB_NAME:-deployment_test}
-      DB_SSL: ${DB_SSL:-false}
-      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
+      <<: *database-environment
     depends_on:
       server:
         condition: service_started
@@ -58,7 +80,10 @@ services:
     build: .
     command: ["node", "dist/microservice-3/index.js"]
     environment:
+      MS3_PORT: 3003
       REDIS_URL: redis://redis:6379
+      REDIS_TLS_REQUIRED: "false"
+      REDIS_PREFIX: ovhtest
     depends_on:
       redis:
         condition: service_healthy

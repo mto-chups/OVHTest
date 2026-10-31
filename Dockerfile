@@ -12,5 +12,6 @@ ENV NODE_ENV=production
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
+COPY database/migrations ./database/migrations
 USER node
 CMD ["node", "dist/server/index.js"]

@@ -1,5 +1,12 @@
+.git
+.github
+.tools
+.terraform
+infra
 node_modules
 dist
-.git
-.env
+.env*
+*.tfstate*
+*.tfplan
+kubeconfig*
 npm-debug.log*

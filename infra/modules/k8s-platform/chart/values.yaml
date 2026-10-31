@@ -1,0 +1,4 @@
+letsencryptEmail: ""
+okmsId: ""
+okmsServer: ""
+externalSecretsNamespace: external-secrets
