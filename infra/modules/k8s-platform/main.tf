@@ -39,18 +39,11 @@ resource "helm_release" "traefik" {
   version    = var.traefik_chart_version
   atomic     = true
   wait       = true
+  timeout    = 900
 
   values = [yamlencode({
     deployment = { replicas = 1 }
     service    = { type = "LoadBalancer" }
-    ports = {
-      web = {
-        redirections = {
-          entryPoint = { to = "websecure", scheme = "https", permanent = true }
-        }
-      }
-    }
-    logs      = { general = { level = "INFO" }, access = { enabled = true } }
     providers = { kubernetesIngress = { enabled = true }, kubernetesCRD = { enabled = true } }
   })]
 }

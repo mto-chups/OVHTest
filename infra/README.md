@@ -2,6 +2,8 @@
 
 Cette arborescence déploie le projet Public Cloud `032692ab7ad4437f9140d11b371eb451` par états indépendants. Les commandes ci-dessous sont volontairement locales : la CI ne possède aucun droit Terraform.
 
+Pour comprendre comment reconstruire cette architecture et suivre un déploiement commenté de bout en bout, consulter le [guide Terraform OVHcloud de A à Z](docs/guide-terraform-de-a-a-z.md).
+
 ## 0. Préparer le poste et confirmer les capacités
 
 Versions attendues : Terraform `1.17.1`, Helm `3.22.1` et kubectl `1.34.1`. Sous Windows, les binaires téléchargés localement dans `.tools/` sont utilisés si l'installation système n'est pas possible (ce dossier reste ignoré par Git).

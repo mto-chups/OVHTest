@@ -9,10 +9,6 @@ resource "ovh_cloud_project_kube" "this" {
   load_balancers_subnet_id = var.load_balancers_subnet_id
   update_policy            = "NEVER_UPDATE"
 
-  ip_allocation_policy {
-    pods_ipv4_cidr     = var.pods_cidr
-    services_ipv4_cidr = var.services_cidr
-  }
 }
 
 resource "ovh_cloud_project_kube_nodepool" "workers" {

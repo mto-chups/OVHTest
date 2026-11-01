@@ -18,6 +18,18 @@ jobs:
       - run: npm ci
       - run: npm test
       - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+      - name: Check OVH registry variables
+        env:
+          REGISTRY_HOST: ${{ vars.OVH_REGISTRY_HOST }}
+          REGISTRY_REPOSITORY: ${{ vars.OVH_REGISTRY_REPOSITORY }}
+        run: |
+          echo "Registry host: $REGISTRY_HOST"
+          echo "Repository: $REGISTRY_REPOSITORY"
+
+          if [ -z "$REGISTRY_HOST" ]; then
+            echo "::error::OVH_REGISTRY_HOST is missing"
+            exit 1
+          fi
       - uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567
         with:
           registry: ${{ vars.OVH_REGISTRY_HOST }}

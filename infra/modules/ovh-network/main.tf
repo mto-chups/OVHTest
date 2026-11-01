@@ -57,7 +57,7 @@ resource "ovh_cloud_project_network_private_subnet_v2" "load_balancers" {
   name                            = "${var.name}-load-balancers"
   cidr                            = var.load_balancers_cidr
   dhcp                            = true
-  enable_gateway_ip               = false
+  enable_gateway_ip               = true
   use_default_public_dns_resolver = true
 }
 
@@ -78,5 +78,5 @@ resource "ovh_cloud_project_gateway" "egress" {
   model        = var.gateway_model
   region       = var.node_region
   network_id   = local.node_network_id
-  subnet_id    = ovh_cloud_project_network_private_subnet_v2.nodes.id
+  subnet_id    = ovh_cloud_project_network_private_subnet_v2.load_balancers.id
 }
