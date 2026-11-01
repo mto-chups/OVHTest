@@ -71,7 +71,7 @@ resource "kubernetes_manifest" "registry_pull" {
       }
       data = [{
         secretKey = ".dockerconfigjson"
-        remoteRef = { key = "pilot/ovhtest/registry-pull", property = ".dockerconfigjson" }
+        remoteRef = { key = "pilot/ovhtest/registry-pull", property = "dockerconfigjson" }
       }]
     }
   }
@@ -95,6 +95,9 @@ resource "kubernetes_job_v1" "migration" {
         }
         security_context {
           run_as_non_root = true
+          run_as_user     = 1000
+          run_as_group    = 1000
+          fs_group        = 1000
           seccomp_profile {
             type = "RuntimeDefault"
           }
@@ -107,6 +110,14 @@ resource "kubernetes_job_v1" "migration" {
             name  = "DB_RUNTIME_USER"
             value = var.runtime_db_user
           }
+          # OVHcloud's managed PostgreSQL endpoint currently presents a chain
+          # that is not trusted by the Node.js image's bundled CA store.
+          # TLS remains enabled by DB_SSL; only chain verification is relaxed
+          # for this pilot until the OVHcloud CA is mounted explicitly.
+          env {
+            name  = "DB_SSL_REJECT_UNAUTHORIZED"
+            value = "false"
+          }
           env_from {
             secret_ref {
               name = "database-migration"
@@ -117,6 +128,7 @@ resource "kubernetes_job_v1" "migration" {
             limits   = local.resources.limits
           }
           security_context {
+            run_as_non_root            = true
             allow_privilege_escalation = false
             read_only_root_filesystem  = true
             capabilities { drop = ["ALL"] }
@@ -149,10 +161,13 @@ module "server" {
   command              = ["node", "dist/server/index.js"]
   port                 = 3000
   env = {
-    PORT               = "3000"
-    MS1_URL            = "http://microservice-1:3001"
-    REDIS_PREFIX       = "ovhtest"
-    REDIS_TLS_REQUIRED = "true"
+    # Use the explicit application variable. Kubernetes creates a SERVER_PORT
+    # service-link variable such as "tcp://10.x.x.x:3000" unless overridden.
+    SERVER_PORT                = "3000"
+    MS1_URL                    = "http://microservice-1:3001"
+    REDIS_PREFIX               = "ovhtest"
+    REDIS_TLS_REQUIRED         = "true"
+    DB_SSL_REJECT_UNAUTHORIZED = "false"
   }
   env_from_secrets  = ["database-runtime", "valkey"]
   image_pull_secret = "registry-pull"
@@ -190,13 +205,17 @@ module "microservice_2" {
   image                = var.image
   command              = ["node", "dist/microservice-2/index.js"]
   port                 = 3002
-  env                  = { MS2_PORT = "3002", SERVER_URL = "http://server:3000" }
-  env_from_secrets     = ["database-runtime"]
-  image_pull_secret    = "registry-pull"
-  secret_revision      = var.secret_revision
-  resources            = local.resources
-  hpa_enabled          = false
-  depends_on           = [kubernetes_job_v1.migration, kubernetes_manifest.database_runtime]
+  env = {
+    MS2_PORT                   = "3002"
+    SERVER_URL                 = "http://server:3000"
+    DB_SSL_REJECT_UNAUTHORIZED = "false"
+  }
+  env_from_secrets  = ["database-runtime"]
+  image_pull_secret = "registry-pull"
+  secret_revision   = var.secret_revision
+  resources         = local.resources
+  hpa_enabled       = false
+  depends_on        = [kubernetes_job_v1.migration, kubernetes_manifest.database_runtime]
 }
 
 module "microservice_3" {

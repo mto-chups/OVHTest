@@ -19,4 +19,4 @@ kubeconfig*
 *.p12
 infra/**/secrets.auto.tfvars
 infra/**/versions.auto.tfvars
-.secrets/ovhtest-pilot-kubeconfig.yaml
+.secrets

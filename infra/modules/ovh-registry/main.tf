@@ -3,8 +3,4 @@ resource "ovh_cloud_project_containerregistry" "this" {
   name         = var.name
   region       = var.region
   plan_id      = var.plan_id
-
-  lifecycle {
-    prevent_destroy = true
-  }
 }

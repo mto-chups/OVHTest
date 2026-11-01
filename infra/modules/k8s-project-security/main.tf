@@ -120,11 +120,11 @@ resource "kubernetes_network_policy_v1" "data" {
         }
       }
       ports {
-        port     = "5432"
+        port     = "20184"
         protocol = "TCP"
       }
       ports {
-        port     = "6379"
+        port     = "20185"
         protocol = "TCP"
       }
     }

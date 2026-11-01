@@ -582,7 +582,17 @@ Cette étape est volontairement hors Terraform afin qu'aucun mot de passe ne se 
 
 ### 10.1 PostgreSQL
 
-Depuis une session `psql` TLS ouverte avec l'administrateur OVHcloud :
+Relever dans le Manager ou dans `terraform output postgresql_endpoints` l'hôte et le
+port réellement exposés. Sur Public Cloud Databases, ce port est souvent un port
+alloué comme `20184` et non `5432`.
+
+L'onglet **Requêtes** du Manager sert à observer les requêtes ; ce n'est pas une
+console SQL. Ouvrir une session `psql` TLS avec l'administrateur OVHcloud depuis un
+poste autorisé, ou depuis un pod Kubernetes conforme à la politique PodSecurity.
+Ajouter auparavant les CIDR réellement utilisés par les nœuds et les pods aux
+restrictions IP du service PostgreSQL.
+
+Depuis `psql` :
 
 ```sql
 CREATE ROLE ovhtest_runtime LOGIN;
@@ -596,22 +606,47 @@ GRANT USAGE ON SCHEMA public TO ovhtest_runtime;
 REVOKE CREATE ON SCHEMA public FROM ovhtest_runtime;
 ```
 
+Ne sélectionner le rôle OVHcloud `replication` ni pour `ovhtest_runtime` ni pour
+`ovhtest_migration` : ce rôle ne donne pas les privilèges applicatifs. Les droits
+utiles sont les `GRANT` SQL ci-dessus. Le Job de migration crée la table de test et
+accorde ensuite au runtime uniquement `SELECT`, `INSERT` et l'usage de sa séquence.
+
+Le mot de passe est celui saisi avec `\password`; OVHcloud ne permet pas de relire
+un mot de passe existant. En cas de doute, le réinitialiser puis mettre à jour le
+secret correspondant.
+
 Créer dans Secret Manager :
 
 - `pilot/ovhtest/database-runtime` avec `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME`, `DB_SSL` et `DB_SSL_REJECT_UNAUTHORIZED` ;
 - `pilot/ovhtest/database-migration` avec les mêmes clés, mais le rôle de migration.
 
-Valeurs imposées : `DB_PORT=5432`, `DB_NAME=ovhtest`, `DB_SSL=true` et `DB_SSL_REJECT_UNAUTHORIZED=true`.
+Valeurs : `DB_HOST` et `DB_PORT` doivent être copiés depuis l'endpoint OVHcloud,
+`DB_NAME=ovhtest` et `DB_SSL=true`. Pour ce pilote, l'image Node.js n'a pas reconnu
+la chaîne de certification présentée par le service : le manifeste force donc
+`DB_SSL_REJECT_UNAUTHORIZED=false` tout en conservant le chiffrement TLS. En
+production, monter explicitement l'autorité de certification OVHcloud et réactiver
+la validation (`true`).
 
 ### 10.2 Valkey
 
-Créer un utilisateur applicatif Valkey et stocker dans `pilot/ovhtest/valkey` :
+Créer un utilisateur Valkey dédié, par exemple `ovhtest_runtime`. Il doit pouvoir
+se connecter, lire/écrire les clés du préfixe applicatif et utiliser Pub/Sub sur
+les canaux `ovhtest:*`. Une ACL minimale équivalente comprend `+ping`, les commandes
+de lecture/écriture nécessaires, `+publish`, `+subscribe`, `+unsubscribe`,
+`+psubscribe`, `+punsubscribe`, les clés `~ovhtest:*` et les canaux `&ovhtest:*`.
+Dans le Manager, cela peut être présenté sous forme de rôle personnalisé ; le rôle
+`replication` ne convient pas.
+
+Stocker dans `pilot/ovhtest/valkey` :
 
 ```text
 REDIS_URL=rediss://UTILISATEUR:MOT_DE_PASSE@HOTE:PORT
 ```
 
 Le préfixe `rediss://` est obligatoire dans Kubernetes afin d'utiliser TLS.
+Le schéma est exactement `rediss://` (pas `valkeys://`). Si l'utilisateur ou le mot
+de passe contient un caractère réservé d'URL (`@`, `:`, `/`, `%`, etc.), encoder ce
+composant en pourcentage avant de construire l'URL.
 
 ### 10.3 Registry
 
@@ -625,7 +660,12 @@ Dans GitHub, définir :
 - secrets `OVH_REGISTRY_PUSH_USERNAME` et `OVH_REGISTRY_PUSH_PASSWORD` ;
 - variables `OVH_REGISTRY_HOST` et `OVH_REGISTRY_REPOSITORY`.
 
-Dans Secret Manager, créer `pilot/ovhtest/registry-pull` avec la propriété `.dockerconfigjson` contenant un document Docker config JSON complet.
+Dans Secret Manager, créer `pilot/ovhtest/registry-pull` avec la propriété
+`dockerconfigjson` (sans point initial) contenant un document Docker config JSON
+complet. L'`ExternalSecret` copie cette propriété vers la clé Kubernetes
+`.dockerconfigjson` (avec point) exigée par le type
+`kubernetes.io/dockerconfigjson`. La valeur doit être un objet JSON, pas le JSON
+échappé une seconde fois.
 
 Ne pas poursuivre vers les applications avant que ces cinq secrets/identités ne soient prêts.
 
@@ -658,14 +698,17 @@ terraform -chdir=infra/environments/pilot/cluster apply cluster.tfplan
 terraform -chdir=infra/environments/pilot/cluster output
 ```
 
-Attendre que le cluster et le node pool soient prêts. Depuis le Manager OVHcloud, télécharger le kubeconfig et l'enregistrer à la racine du dépôt sous `kubeconfig-pilot.yaml`. Il est ignoré par Git.
+Attendre que le cluster et le node pool soient prêts. Depuis le Manager OVHcloud,
+télécharger le kubeconfig et l'enregistrer sous
+`.secrets/ovhtest-pilot-kubeconfig.yaml`. Le répertoire est ignoré par Git.
 
 Tester l'accès :
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml cluster-info
-kubectl --kubeconfig .\kubeconfig-pilot.yaml get nodes -o wide
-kubectl --kubeconfig .\kubeconfig-pilot.yaml get namespaces
+$env:KUBECONFIG = "$PWD\.secrets\ovhtest-pilot-kubeconfig.yaml"
+kubectl cluster-info
+kubectl get nodes -o wide
+kubectl get namespaces
 ```
 
 Les nœuds doivent être `Ready`. Si la connexion est refusée, vérifier d'abord l'adresse publique courante et `admin_cidrs`.
@@ -681,7 +724,7 @@ Copy-Item infra/environments/pilot/platform/terraform.tfvars.example infra/envir
 Renseigner :
 
 ```hcl
-kubeconfig_path = "../../../../kubeconfig-pilot.yaml"
+kubeconfig_path = "../../../../.secrets/ovhtest-pilot-kubeconfig.yaml"
 okms_id         = "OUTPUT_OKMS_ID"
 okms_server     = "OUTPUT_OKMS_REST_ENDPOINT"
 ```
@@ -710,20 +753,39 @@ Ce state installe :
 
 ### 12.3 Ajouter le certificat mTLS d'External Secrets
 
-Récupérer auprès d'OVHcloud `cert.pem` et `key.pem`, puis créer le Secret directement dans Kubernetes :
+Créer dans OKMS un certificat d'accès ECDSA **sans CSR**. Le téléchargement initial
+de la clé privée et le téléchargement ultérieur du certificat sont deux fichiers
+différents :
+
+- la clé commence par `-----BEGIN EC PRIVATE KEY-----` ou
+  `-----BEGIN PRIVATE KEY-----` ;
+- le certificat commence par `-----BEGIN CERTIFICATE-----` et peut contenir la
+  chaîne complète, donc plusieurs blocs `CERTIFICATE` ;
+- la clé et le premier certificat doivent former la même paire. Si `kubectl`
+  signale `private key does not match public key`, retélécharger les deux éléments
+  du même certificat d'accès.
+
+Le certificat n'est disponible qu'après que le statut du certificat d'accès est
+`Prêt`. Le bouton **Télécharger** de la fiche fournit alors le PEM public. Enregistrer
+les fichiers localement sous `.secrets/client.crt` et `.secrets/client.key`, puis
+créer le Secret directement dans Kubernetes :
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n external-secrets create secret tls ovhcloud-mtls --cert .\cert.pem --key .\key.pem --dry-run=client -o yaml | kubectl --kubeconfig .\kubeconfig-pilot.yaml apply -f -
-kubectl --kubeconfig .\kubeconfig-pilot.yaml get clustersecretstore ovhcloud
+$env:KUBECONFIG = "$PWD\.secrets\ovhtest-pilot-kubeconfig.yaml"
+kubectl -n external-secrets create secret tls ovhcloud-mtls --cert .\.secrets\client.crt --key .\.secrets\client.key --dry-run=client -o yaml | kubectl apply -f -
+kubectl describe clustersecretstore ovhcloud
 ```
 
-Attendre `Ready=True`. Ne jamais intégrer le certificat privé à Terraform. Supprimer les copies locales devenues inutiles selon la politique de sécurité de l'organisation.
+Attendre `Ready=True`. Les anciens événements `Secret not found` restent visibles
+dans `describe` ; la condition courante et le dernier événement `Valid` font foi.
+Ne jamais intégrer la clé privée à Terraform. Supprimer les copies locales devenues
+inutiles selon la politique de sécurité de l'organisation.
 
 ### 12.4 Attendre l'IP du Load Balancer
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n traefik get pods
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n traefik get service traefik --watch
+kubectl -n traefik get pods
+kubectl -n traefik get service traefik --watch
 ```
 
 Noter la valeur `EXTERNAL-IP` dès qu'elle apparaît, puis arrêter `--watch` avec `Ctrl+C`.
@@ -749,6 +811,25 @@ terraform -chdir=infra/environments/pilot/edge-dns output
 ```
 
 Le résultat attendu est un enregistrement A `pilot.minesave.fr` avec un TTL de 300 secondes.
+
+La chaîne de routage est la suivante :
+
+```text
+navigateur
+  -> DNS A pilot.minesave.fr
+  -> IP publique du Load Balancer OVHcloud
+  -> Service Kubernetes traefik de type LoadBalancer
+  -> Ingress dont l'hôte est pilot.minesave.fr
+  -> Service ClusterIP server:3000
+  -> pod server
+```
+
+L'adresse publique n'est donc ni l'IP d'un pod ni l'IP d'un nœud : OVHcloud la
+provisionne lorsque Helm crée le Service Traefik de type `LoadBalancer`. Elle est
+relevée avec `kubectl -n traefik get service traefik`, copiée dans
+`edge-dns/terraform.tfvars`, puis `ovh_domain_zone_record.pilot` crée le lien DNS.
+cert-manager utilise ensuite ce même routage pour le challenge HTTP-01 et le
+certificat HTTPS.
 
 Contrôler la propagation :
 
@@ -789,7 +870,7 @@ Copy-Item infra/environments/pilot/applications/terraform.tfvars.example infra/e
 Adapter le kubeconfig :
 
 ```hcl
-kubeconfig_path = "../../../../kubeconfig-pilot.yaml"
+kubeconfig_path = "../../../../.secrets/ovhtest-pilot-kubeconfig.yaml"
 secret_revision = "1"
 ```
 
@@ -802,7 +883,7 @@ image = "registry.gra.cloud.ovh.net/PROJET/ovhtest@sha256:DIGEST_REEL"
 ### 15.2 Vérifier les secrets avant l'apply
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml get clustersecretstore ovhcloud
+kubectl get clustersecretstore ovhcloud
 ```
 
 Le store doit être prêt. Terraform va créer les `ExternalSecret`, puis le Job de migration attendra les secrets Kubernetes générés.
@@ -830,20 +911,20 @@ L'apply effectue dans l'ordre :
 ### 15.4 Contrôler le rollout
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get externalsecrets
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get jobs
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get deployments,pods,services,ingress
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest rollout status deployment/server
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest rollout status deployment/microservice-1
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest rollout status deployment/microservice-2
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest rollout status deployment/microservice-3
+kubectl -n ovhtest get externalsecrets
+kubectl -n ovhtest get jobs
+kubectl -n ovhtest get deployments,pods,services,ingress
+kubectl -n ovhtest rollout status deployment/server
+kubectl -n ovhtest rollout status deployment/microservice-1
+kubectl -n ovhtest rollout status deployment/microservice-2
+kubectl -n ovhtest rollout status deployment/microservice-3
 ```
 
 Si le Job de migration échoue, lire ses logs sans afficher les Secrets :
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get pods -l app.kubernetes.io/name=database-migration
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest logs job/NOM_EXACT_DU_JOB
+kubectl -n ovhtest get pods -l app.kubernetes.io/name=database-migration
+kubectl -n ovhtest logs job/NOM_EXACT_DU_JOB
 ```
 
 Ne pas utiliser `kubectl describe secret` ou une sortie JSON/YAML des Secrets dans un terminal enregistré.
@@ -853,8 +934,8 @@ Ne pas utiliser `kubectl describe secret` ou une sortie JSON/YAML des Secrets da
 Après propagation DNS, cert-manager traite le challenge HTTP-01 :
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get certificate,certificaterequest,challenge,order
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n ovhtest get ingress
+kubectl -n ovhtest get certificate,certificaterequest,challenge,order
+kubectl -n ovhtest get ingress
 ```
 
 Le certificat `pilot-minesave-fr-tls` doit devenir prêt.
@@ -922,8 +1003,8 @@ terraform -chdir=infra/environments/pilot/observability apply observability.tfpl
 Vérifier :
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n logging get externalsecret,pods
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n logging get daemonset
+kubectl -n logging get externalsecret,pods
+kubectl -n logging get daemonset
 ```
 
 Chaque nœud doit exécuter un pod Fluent Bit. Les logs des quatre composants doivent ensuite apparaître dans le stream `ovhtest-pilot` de LDP.
@@ -1009,9 +1090,9 @@ Vérifier :
 ### Un ExternalSecret n'est pas prêt
 
 ```powershell
-kubectl --kubeconfig .\kubeconfig-pilot.yaml get clustersecretstore ovhcloud
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n NOM_NAMESPACE get externalsecret
-kubectl --kubeconfig .\kubeconfig-pilot.yaml -n NOM_NAMESPACE describe externalsecret NOM
+kubectl get clustersecretstore ovhcloud
+kubectl -n NOM_NAMESPACE get externalsecret
+kubectl -n NOM_NAMESPACE describe externalsecret NOM
 ```
 
 Contrôler le certificat mTLS, le chemin exact du secret distant et le nom de sa propriété. Ne pas afficher la valeur du Secret Kubernetes.
@@ -1021,7 +1102,8 @@ Contrôler le certificat mTLS, le chemin exact du secret distant et le nom de sa
 Vérifier :
 
 - que le digest existe dans le Registry ;
-- que `.dockerconfigjson` est un JSON Docker complet ;
+- que la propriété distante `dockerconfigjson` existe et contient un JSON Docker
+  complet ; l'`ExternalSecret` la transforme en clé Kubernetes `.dockerconfigjson` ;
 - que l'identité pull a le droit de lire le repository ;
 - que l'`ExternalSecret` `registry-pull` est prêt.
 
@@ -1037,24 +1119,268 @@ Vérifier dans cet ordre :
 
 ### L'apply applicatif attend le Job de migration
 
-Le timeout est de dix minutes. Vérifier le pod du Job, la résolution DNS privée, la connectivité au port 5432, le secret de migration et le certificat TLS PostgreSQL. Corriger la cause, produire un nouveau plan, puis réappliquer ; ne pas contourner la migration.
+Le timeout est de dix minutes. Vérifier le pod du Job, la résolution DNS privée, la
+connectivité au `DB_PORT` réel de l'endpoint, le secret de migration et le certificat
+TLS PostgreSQL. Corriger la cause, produire un nouveau plan, puis réappliquer ; ne
+pas contourner la migration.
+
+Ne pas se fier au port standard `5432` dans ce diagnostic : tester le `DB_PORT`
+réel du secret (par exemple `20184`). Les erreurs ont des significations distinctes :
+
+- `Connection timed out` : routage, restriction IP OVHcloud, NetworkPolicy ou CIDR
+  incorrect ;
+- `no password supplied` : le réseau fonctionne, mais le client n'a pas reçu le
+  mot de passe ;
+- `password authentication failed` : utilisateur/mot de passe incorrect ;
+- `permission denied` : la connexion fonctionne, mais les `GRANT` SQL manquent ;
+- erreur de chaîne X.509 : TLS fonctionne, mais l'autorité n'est pas approuvée par
+  l'image cliente.
+
+### Terraform reste sur `Still creating`
+
+Terraform attend la réussite du Job et la disponibilité des Deployments. Ne pas
+attendre dix minutes à l'aveugle : ouvrir un second terminal et exécuter :
+
+```powershell
+$env:KUBECONFIG = "$PWD\.secrets\ovhtest-pilot-kubeconfig.yaml"
+kubectl -n ovhtest get pods
+kubectl -n ovhtest get events --sort-by=.lastTimestamp | Select-Object -Last 30
+kubectl -n ovhtest logs job/database-migration-9173b81f0d --tail=100
+kubectl -n ovhtest logs deployment/server --tail=100
+kubectl -n ovhtest logs deployment/microservice-2 --tail=100
+kubectl -n ovhtest logs deployment/microservice-3 --tail=100
+```
+
+Adapter le nom du Job obtenu par `kubectl -n ovhtest get jobs`. Après correction,
+ne pas réutiliser un ancien fichier `.tfplan` : recréer le plan. Un Job ayant atteint
+`BackoffLimitExceeded` est immuable ; supprimer ce Job échoué avant le nouvel apply
+si Terraform ne peut pas le remplacer.
+
+### `kubectl` tente `localhost:8080`
+
+La variable `KUBECONFIG` n'est définie que dans le terminal PowerShell courant.
+La redéfinir dans chaque nouvelle session :
+
+```powershell
+$env:KUBECONFIG = "$PWD\.secrets\ovhtest-pilot-kubeconfig.yaml"
+kubectl config current-context
+kubectl cluster-info
+```
+
+Une erreur vers `http://localhost:8080` ne vient donc pas du cluster : elle signifie
+que `kubectl` n'a chargé aucun kubeconfig valide.
+
+### PostgreSQL ou Valkey reste inaccessible depuis les pods
+
+Vérifier les trois couches séparément :
+
+1. l'endpoint privé résout vers le subnet data (`10.40.2.0/24`) ;
+2. la NetworkPolicy autorise les ports OVHcloud réellement attribués (`20184` et
+   `20185` dans ce pilote), pas seulement `5432` et `6379` ;
+3. les restrictions IP OVHcloud couvrent le CIDR des nœuds et le CIDR réellement
+   observé sur les pods (`kubectl -n ovhtest get pods -o wide`).
+
+Le namespace applique PodSecurity `restricted`. Un pod de diagnostic improvisé est
+refusé s'il n'a pas `runAsNonRoot=true`, `allowPrivilegeEscalation=false`,
+`capabilities.drop=["ALL"]` et `seccompProfile.type=RuntimeDefault`. Réutiliser ces
+champs dans tout manifeste de diagnostic, puis supprimer le pod après le test.
+
+### Valkey répond `NOPERM ... subscribe`
+
+La connexion et le mot de passe sont valides, mais l'ACL n'autorise pas Pub/Sub.
+Ajouter au rôle de `ovhtest_runtime` les commandes `PUBLISH`, `SUBSCRIBE`,
+`UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE` et le motif de canaux `&ovhtest:*`, puis
+redémarrer `server` et `microservice-3`. Le droit sur les clés `~ovhtest:*` ne donne
+pas automatiquement le droit sur les canaux.
+
+### Le serveur écoute sur un port de type `tcp://...`
+
+Kubernetes injecte des variables de service comme `SERVER_PORT`. Elles peuvent
+entrer en collision avec les variables applicatives. Le module désactive désormais
+`enable_service_links` et le serveur reçoit explicitement `SERVER_PORT=3000`.
+Conserver des noms d'environnement applicatifs non ambigus pour les futurs services.
+
+### Un service reste `STARTING` alors que son pod est prêt
+
+Les statuts du tableau de bord sont conservés en mémoire par `server`. Un redémarrage
+du serveur efface les statuts déjà envoyés. Les microservices doivent renvoyer leur
+état périodiquement ; `microservice-2` possède un heartbeat. Tant que l'image incluant
+ce correctif n'est pas construite et déployée, redémarrer le microservice après le
+serveur masque seulement la course de démarrage.
+
+Pour un redémarrage contrôlé de tous les Deployments :
+
+```powershell
+kubectl -n ovhtest rollout restart deployment
+kubectl -n ovhtest rollout status deployment/server --timeout=5m
+kubectl -n ovhtest get pods -w
+```
+
+Le rolling restart est volontairement transparent : le Service et l'Ingress restent
+stables pendant que Kubernetes remplace les pods. Arrêter `-w` avec `Ctrl+C` ; ce
+n'est pas un blocage.
 
 ## 21. Destruction et fin de pilote
 
-Une destruction complète est volontairement difficile : plusieurs ressources utilisent `prevent_destroy` et les bases ont aussi la protection OVHcloud. C'est une mesure de sécurité, pas une erreur.
+Cette procédure est réservée au cas où le projet Public Cloud est dédié au pilote.
+Pour le projet `032692ab7ad4437f9140d11b371eb451`, cette exclusivité a été confirmée.
+La suppression est irréversible : sauvegarder auparavant toute donnée ou tout state
+qui doit servir à un audit.
 
-Avant toute fin de pilote :
+Les protections ont deux niveaux : `prevent_destroy` dans Terraform et
+`deletion_protection` côté OVHcloud. La modification de fin de pilote retire les
+`prevent_destroy` de PostgreSQL, Valkey, Registry et OKMS, et fixe les deux
+`deletion_protection` à `false`. Un apply normal de `shared-services` doit d'abord
+propager cette désactivation ; le plan de destruction vient seulement ensuite.
 
-1. sauvegarder les données et les states ;
-2. documenter les ressources à conserver ;
-3. retirer le trafic et le DNS ;
-4. détruire dans l'ordre inverse des dépendances ;
-5. lever chaque `prevent_destroy` dans une modification dédiée et relue ;
-6. ne supprimer le bucket de state qu'après validation de la disparition de toutes les ressources.
+### 21.1 Préparer la session et sauvegarder les states
 
-Ordre conceptuel inverse : `observability`, `applications`, `edge-dns`, `platform`, `cluster`, `shared-services`, `shared-network`, puis `bootstrap` en dernier.
+```powershell
+Set-Location C:\Users\match\Documents\code\OVHTest
+$env:KUBECONFIG = "$PWD\.secrets\ovhtest-pilot-kubeconfig.yaml"
+kubectl config current-context
 
-Ne jamais lancer un `terraform destroy` global improvisé. Chaque state doit avoir son propre plan de destruction, son approbation de coût/impact et une vérification dans le Manager OVHcloud.
+$backup = ".secrets\state-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+New-Item -ItemType Directory -Path $backup | Out-Null
+$states = @('bootstrap','shared-network','shared-services','cluster','platform','edge-dns','applications','observability')
+foreach ($state in $states) {
+  terraform "-chdir=infra/environments/pilot/$state" init -reconfigure "-backend-config=../../../backend.hcl" "-backend-config=key=pilot/$state.tfstate"
+  terraform "-chdir=infra/environments/pilot/$state" state pull |
+    Set-Content -Encoding utf8 "$backup/$state.tfstate"
+}
+```
+
+Ne jamais publier ce dossier : un state peut contenir des données sensibles.
+
+### 21.2 Détruire les states dans l'ordre
+
+Chaque paire `plan -destroy` / `apply` est volontairement séparée afin de relire le
+plan. Ne continuer que si le plan ne vise que le lot nommé.
+
+```powershell
+terraform "-chdir=infra/environments/pilot/edge-dns" plan -destroy "-out=edge-dns-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/edge-dns" apply "edge-dns-destroy.tfplan"
+
+$obsDir = "infra/environments/pilot/observability"
+$obsResources = @(terraform "-chdir=$obsDir" state list 2>$null)
+
+if ($LASTEXITCODE -ne 0 -or $obsResources.Count -eq 0) {
+  Write-Host "State observability absent ou vide : aucun destroy nécessaire"
+} else {
+  $obsState = terraform "-chdir=$obsDir" state pull | ConvertFrom-Json
+  $stream = $obsState.resources | Where-Object type -eq "ovh_dbaas_logs_output_graylog_stream" | Select-Object -First 1
+  $fluentBit = $obsState.resources | Where-Object type -eq "helm_release" | Select-Object -First 1
+  if (-not $stream -or -not $fluentBit) { throw "State observability incomplet" }
+
+  $ldpService = [string]$stream.instances[0].attributes.service_name
+  $retentionId = [string]$stream.instances[0].attributes.retention_id
+  $helmValues = [string]$fluentBit.instances[0].attributes.values[0]
+  $hostMatch = [regex]::Match($helmValues, '(?m)^\s*Host\s+([A-Za-z0-9.-]+)\s*$')
+  if (-not $hostMatch.Success) { throw "Impossible de retrouver ldp_host dans le state Helm" }
+
+  $obsVars = @(
+    "-var=kubeconfig_path=$env:KUBECONFIG",
+    "-var=ldp_service_name=$ldpService",
+    "-var=retention_id=$retentionId",
+    "-var=ldp_host=$($hostMatch.Groups[1].Value)",
+    "-var=kube_id=$(terraform '-chdir=infra/environments/pilot/cluster' output -raw cluster_id)",
+    "-var=postgresql_cluster_id=$(terraform '-chdir=infra/environments/pilot/shared-services' output -raw postgresql_cluster_id)",
+    "-var=valkey_cluster_id=$(terraform '-chdir=infra/environments/pilot/shared-services' output -raw valkey_cluster_id)"
+  )
+
+  terraform "-chdir=$obsDir" plan -destroy "-out=observability-destroy.tfplan" @obsVars
+  terraform "-chdir=$obsDir" show "observability-destroy.tfplan"
+  terraform "-chdir=$obsDir" apply "observability-destroy.tfplan"
+}
+
+terraform "-chdir=infra/environments/pilot/applications" plan -destroy "-out=applications-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/applications" apply "applications-destroy.tfplan"
+
+terraform "-chdir=infra/environments/pilot/platform" plan -destroy "-out=platform-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/platform" apply "platform-destroy.tfplan"
+```
+
+À ce point, vérifier dans le Manager que le Load Balancer associé à l'IP publique a
+disparu. Le Service Traefik doit être supprimé avant le cluster afin que le cloud
+controller puisse libérer proprement le Load Balancer.
+
+```powershell
+kubectl get service -A
+terraform "-chdir=infra/environments/pilot/cluster" plan -destroy "-out=cluster-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/cluster" apply "cluster-destroy.tfplan"
+```
+
+Après la destruction du cluster, `kubectl` doit échouer : c'est attendu.
+
+Propager ensuite la levée de protection des services, puis les détruire :
+
+```powershell
+terraform "-chdir=infra/environments/pilot/shared-services" plan "-out=shared-services-unprotect.tfplan"
+terraform "-chdir=infra/environments/pilot/shared-services" apply "shared-services-unprotect.tfplan"
+terraform "-chdir=infra/environments/pilot/shared-services" plan -destroy "-out=shared-services-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/shared-services" apply "shared-services-destroy.tfplan"
+```
+
+Avant de détruire le réseau, supprimer dans le Manager tout service créé hors state
+qui l'utilise encore, notamment un éventuel Valkey dupliqué lors d'un apply interrompu.
+Attendre sa disparition complète, puis :
+
+```powershell
+terraform "-chdir=infra/environments/pilot/shared-network" plan -destroy "-out=shared-network-destroy.tfplan"
+terraform "-chdir=infra/environments/pilot/shared-network" apply "shared-network-destroy.tfplan"
+```
+
+Si `shared-services` échoue sur OKMS avec un `403` visant
+`/me/notification/email/history`, le provider ne peut pas lire l'e-mail contenant
+le jeton de confirmation de résiliation. La solution la moins permissive consiste à
+supprimer OKMS depuis le Manager, confirmer l'e-mail, attendre sa disparition, puis
+retirer **uniquement après cette vérification** son adresse du state :
+
+```powershell
+terraform "-chdir=infra/environments/pilot/shared-services" state list
+terraform "-chdir=infra/environments/pilot/shared-services" state rm "module.secrets.ovh_okms.this"
+terraform "-chdir=infra/environments/pilot/shared-services" state list
+```
+
+L'autre possibilité est de créer un consumer key temporaire autorisant les routes
+de résiliation documentées par le provider : lecture de
+`/me/notification/email/history` et de ses éléments, lecture de `/services`, puis
+`POST /services/*/terminate` et `POST /services/*/terminate/confirm`. Ces routes sont
+globales au compte ; révoquer immédiatement ce consumer key après la destruction.
+
+Si le Manager refuse d'abord la suppression d'OKMS, supprimer dans OKMS les
+certificats d'accès et les secrets encore présents, puis recommencer. Si
+`shared-network` échoue avec un port ou un subnet encore utilisé, ne forcer aucune suppression :
+chercher dans le Manager le PostgreSQL, Valkey, Load Balancer, gateway ou port
+OpenStack orphelin, le supprimer, attendre la fin de l'opération, puis recréer le
+plan. OVHcloud bloque volontairement la suppression d'un réseau encore attaché à
+un service de base de données.
+
+Le vRack `pn-1364156` n'est pas détruit : `create_vrack=false` indique qu'il existait
+avant le pilote. Vérifier qu'il n'entraîne pas une facturation propre et le conserver
+s'il sert ailleurs.
+
+### 21.3 Supprimer les ressources hors state et fermer le projet
+
+Dans le Manager OVHcloud :
+
+1. vérifier qu'il ne reste ni cluster, node pool, Load Balancer, Floating/Additional
+   IP, Registry, PostgreSQL, Valkey, Object Storage ni ressource réseau du pilote ;
+2. supprimer l'éventuel Valkey dupliqué ;
+3. résilier le service Logs Data Platform activé manuellement s'il était dédié ;
+4. vérifier la disparition d'OKMS, qui est un service de compte et non une simple
+   ressource Kubernetes ;
+5. ouvrir **Public Cloud > Project settings > Delete project**, supprimer le projet
+   `032692ab7ad4437f9140d11b371eb451` et confirmer l'e-mail OVHcloud.
+
+Ne pas exécuter `terraform destroy` sur `bootstrap` tant que les autres states sont
+encore distants : ce lot contient le bucket qui les héberge. Puisque le projet est
+entièrement supprimé, sa fermeture supprime finalement ce bucket et les states. La
+sauvegarde locale précédente est la trace d'audit.
+
+Le domaine `minesave.fr` et le vRack préexistant ne font pas partie du projet et ne
+sont donc pas résiliés. Le record A `pilot` est supprimé par `edge-dns`, mais le
+renouvellement du domaine continue tant qu'il n'est pas résilié séparément.
 
 ## 22. Fichiers de référence
 

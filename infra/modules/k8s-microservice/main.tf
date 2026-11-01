@@ -21,11 +21,15 @@ resource "kubernetes_deployment_v1" "this" {
       spec {
         service_account_name            = var.service_account_name
         automount_service_account_token = false
+        enable_service_links            = false
         image_pull_secrets {
           name = var.image_pull_secret
         }
         security_context {
           run_as_non_root = true
+          run_as_user     = 1000
+          run_as_group    = 1000
+          fs_group        = 1000
           seccomp_profile {
             type = "RuntimeDefault"
           }
@@ -76,6 +80,7 @@ resource "kubernetes_deployment_v1" "this" {
             limits   = var.resources.limits
           }
           security_context {
+            run_as_non_root            = true
             allow_privilege_escalation = false
             read_only_root_filesystem  = true
             capabilities {
